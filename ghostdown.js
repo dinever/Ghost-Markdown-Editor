@@ -1,5 +1,5 @@
 
-// CodeMirror version 3.15
+// CodeMirror version 3.19
 //
 // CodeMirror is the only global var we claim
 window.CodeMirror = (function() {
@@ -27,7 +27,7 @@ window.CodeMirror = (function() {
   // This is woefully incomplete. Suggestions for alternative methods welcome.
   var mobile = ios || /Android|webOS|BlackBerry|Opera Mini|Opera Mobi|IEMobile/i.test(navigator.userAgent);
   var mac = ios || /Mac/.test(navigator.platform);
-  var windows = /windows/i.test(navigator.platform);
+  var windows = /win/i.test(navigator.platform);
 
   var opera_version = opera && navigator.userAgent.match(/Version\/(\d*\.\d*)/);
   if (opera_version) opera_version = Number(opera_version[1]);
@@ -307,15 +307,13 @@ window.CodeMirror = (function() {
   // Make sure the gutters options contains the element
   // "CodeMirror-linenumbers" when the lineNumbers option is true.
   function setGuttersForLineNumbers(options) {
-    var found = false;
-    for (var i = 0; i < options.gutters.length; ++i) {
-      if (options.gutters[i] == "CodeMirror-linenumbers") {
-        if (options.lineNumbers) found = true;
-        else options.gutters.splice(i--, 1);
-      }
+    var found = indexOf(options.gutters, "CodeMirror-linenumbers");
+    if (found == -1 && options.lineNumbers) {
+      options.gutters = options.gutters.concat(["CodeMirror-linenumbers"]);
+    } else if (found > -1 && !options.lineNumbers) {
+      options.gutters = options.gutters.slice(0);
+      options.gutters.splice(found, 1);
     }
-    if (!found && options.lineNumbers)
-      options.gutters.push("CodeMirror-linenumbers");
   }
 
   // SCROLLBARS
@@ -335,13 +333,19 @@ window.CodeMirror = (function() {
       d.scrollbarV.style.bottom = needsH ? scrollbarWidth(d.measure) + "px" : "0";
       d.scrollbarV.firstChild.style.height =
         (scrollHeight - d.scroller.clientHeight + d.scrollbarV.clientHeight) + "px";
-    } else d.scrollbarV.style.display = "";
+    } else {
+      d.scrollbarV.style.display = "";
+      d.scrollbarV.firstChild.style.height = "0";
+    }
     if (needsH) {
       d.scrollbarH.style.display = "block";
       d.scrollbarH.style.right = needsV ? scrollbarWidth(d.measure) + "px" : "0";
       d.scrollbarH.firstChild.style.width =
         (d.scroller.scrollWidth - d.scroller.clientWidth + d.scrollbarH.clientWidth) + "px";
-    } else d.scrollbarH.style.display = "";
+    } else {
+      d.scrollbarH.style.display = "";
+      d.scrollbarH.firstChild.style.width = "0";
+    }
     if (needsH && needsV) {
       d.scrollbarFiller.style.display = "block";
       d.scrollbarFiller.style.height = d.scrollbarFiller.style.width = scrollbarWidth(d.measure) + "px";
@@ -352,8 +356,10 @@ window.CodeMirror = (function() {
       d.gutterFiller.style.width = d.gutters.offsetWidth + "px";
     } else d.gutterFiller.style.display = "";
 
-    if (mac_geLion && scrollbarWidth(d.measure) === 0)
+    if (mac_geLion && scrollbarWidth(d.measure) === 0) {
       d.scrollbarV.style.minWidth = d.scrollbarH.style.minHeight = mac_geMountainLion ? "18px" : "12px";
+      d.scrollbarV.style.pointerEvents = d.scrollbarH.style.pointerEvents = "none";
+    }
   }
 
   function visibleLines(display, doc, viewPort) {
@@ -408,12 +414,18 @@ window.CodeMirror = (function() {
   function updateDisplay(cm, changes, viewPort, forced) {
     var oldFrom = cm.display.showingFrom, oldTo = cm.display.showingTo, updated;
     var visible = visibleLines(cm.display, cm.doc, viewPort);
-    for (;;) {
+    for (var first = true;; first = false) {
+      var oldWidth = cm.display.scroller.clientWidth;
       if (!updateDisplayInner(cm, changes, visible, forced)) break;
-      forced = false;
       updated = true;
+      changes = [];
       updateSelection(cm);
       updateScrollbars(cm);
+      if (first && cm.options.lineWrapping && oldWidth != cm.display.scroller.clientWidth) {
+        forced = true;
+        continue;
+      }
+      forced = false;
 
       // Clip forced viewport to actual scrollable area
       if (viewPort)
@@ -422,7 +434,6 @@ window.CodeMirror = (function() {
       visible = visibleLines(cm.display, cm.doc, viewPort);
       if (visible.from >= cm.display.showingFrom && visible.to <= cm.display.showingTo)
         break;
-      changes = [];
     }
 
     if (updated) {
@@ -458,7 +469,7 @@ window.CodeMirror = (function() {
     var positionsChangedFrom = Infinity;
     if (cm.options.lineNumbers)
       for (var i = 0; i < changes.length; ++i)
-        if (changes[i].diff) { positionsChangedFrom = changes[i].from; break; }
+        if (changes[i].diff && changes[i].from < positionsChangedFrom) { positionsChangedFrom = changes[i].from; }
 
     var end = doc.first + doc.size;
     var from = Math.max(visible.from - cm.options.viewportMargin, doc.first);
@@ -615,7 +626,7 @@ window.CodeMirror = (function() {
       if (nextIntact && nextIntact.to == lineN) nextIntact = intact.shift();
       if (lineIsHidden(cm.doc, line)) {
         if (line.height != 0) updateLineHeight(line, 0);
-        if (line.widgets && cur.previousSibling) for (var i = 0; i < line.widgets.length; ++i) {
+        if (line.widgets && cur && cur.previousSibling) for (var i = 0; i < line.widgets.length; ++i) {
           var w = line.widgets[i];
           if (w.showIfHidden) {
             var prev = cur.previousSibling;
@@ -660,10 +671,11 @@ window.CodeMirror = (function() {
   }
 
   function buildLineElement(cm, line, lineNo, dims, reuse) {
-    var lineElement = lineContent(cm, line);
+    var built = buildLineContent(cm, line), lineElement = built.pre;
     var markers = line.gutterMarkers, display = cm.display, wrap;
 
-    if (!cm.options.lineNumbers && !markers && !line.bgClass && !line.wrapClass && !line.widgets)
+    var bgClass = built.bgClass ? built.bgClass + " " + (line.bgClass || "") : line.bgClass;
+    if (!cm.options.lineNumbers && !markers && !bgClass && !line.wrapClass && !line.widgets)
       return lineElement;
 
     // Lines with gutter elements, widgets or a background class need
@@ -701,8 +713,8 @@ window.CodeMirror = (function() {
       wrap.appendChild(lineElement);
     }
     // Kludge to make sure the styled element lies behind the selection (by z-index)
-    if (line.bgClass)
-      wrap.insertBefore(elt("div", null, line.bgClass + " CodeMirror-linebackground"), wrap.firstChild);
+    if (bgClass)
+      wrap.insertBefore(elt("div", null, bgClass + " CodeMirror-linebackground"), wrap.firstChild);
     if (cm.options.lineNumbers || markers) {
       var gutterWrap = wrap.insertBefore(elt("div", null, null, "position: absolute; left: " +
                                              (cm.options.fixedGutter ? dims.fixedPos : -dims.gutterTotalWidth) + "px"),
@@ -874,9 +886,10 @@ window.CodeMirror = (function() {
     clearInterval(display.blinker);
     var on = true;
     display.cursor.style.visibility = display.otherCursor.style.visibility = "";
-    display.blinker = setInterval(function() {
-      display.cursor.style.visibility = display.otherCursor.style.visibility = (on = !on) ? "" : "hidden";
-    }, cm.options.cursorBlinkRate);
+    if (cm.options.cursorBlinkRate > 0)
+      display.blinker = setInterval(function() {
+        display.cursor.style.visibility = display.otherCursor.style.visibility = (on = !on) ? "" : "hidden";
+      }, cm.options.cursorBlinkRate);
   }
 
   // HIGHLIGHT WORKER
@@ -928,7 +941,8 @@ window.CodeMirror = (function() {
   // parse correctly.
   function findStartLine(cm, n, precise) {
     var minindent, minline, doc = cm.doc;
-    for (var search = n, lim = n - 100; search > lim; --search) {
+    var lim = precise ? -1 : n - (cm.doc.mode.innerMode ? 1000 : 100);
+    for (var search = n; search > lim; --search) {
       if (search <= doc.first) return doc.first;
       var line = getLine(doc, search - 1);
       if (line.stateAfter && (!precise || search <= doc.frontier)) return search;
@@ -943,7 +957,7 @@ window.CodeMirror = (function() {
 
   function getStateBefore(cm, n, precise) {
     var doc = cm.doc, display = cm.display;
-      if (!doc.mode.startState) return true;
+    if (!doc.mode.startState) return true;
     var pos = findStartLine(cm, n, precise), state = pos > doc.first && getLine(doc, pos-1).stateAfter;
     if (!state) state = startState(doc.mode);
     else state = copyState(doc.mode, state);
@@ -953,6 +967,7 @@ window.CodeMirror = (function() {
       line.stateAfter = save ? copyState(doc.mode, state) : null;
       ++pos;
     });
+    if (precise) doc.frontier = pos;
     return state;
   }
 
@@ -968,6 +983,10 @@ window.CodeMirror = (function() {
   function measureChar(cm, line, ch, data, bias) {
     var dir = -1;
     data = data || measureLine(cm, line);
+    if (data.crude) {
+      var left = data.left + ch * data.width;
+      return {left: left, right: left + data.width, top: data.top, bottom: data.bottom};
+    }
 
     for (var pos = ch;; pos += dir) {
       var r = data[pos];
@@ -989,7 +1008,7 @@ window.CodeMirror = (function() {
       var memo = cache[i];
       if (memo.text == line.text && memo.markedSpans == line.markedSpans &&
           cm.display.scroller.clientWidth == memo.width &&
-          memo.classes == line.textClass + "|" + line.bgClass + "|" + line.wrapClass)
+          memo.classes == line.textClass + "|" + line.wrapClass)
         return memo;
     }
   }
@@ -1009,15 +1028,18 @@ window.CodeMirror = (function() {
     var cache = cm.display.measureLineCache;
     var memo = {text: line.text, width: cm.display.scroller.clientWidth,
                 markedSpans: line.markedSpans, measure: measure,
-                classes: line.textClass + "|" + line.bgClass + "|" + line.wrapClass};
+                classes: line.textClass + "|" + line.wrapClass};
     if (cache.length == 16) cache[++cm.display.measureLineCachePos % 16] = memo;
     else cache.push(memo);
     return measure;
   }
 
   function measureLineInner(cm, line) {
+    if (!cm.options.lineWrapping && line.text.length >= cm.options.crudeMeasuringFrom)
+      return crudelyMeasureLine(cm, line);
+
     var display = cm.display, measure = emptyArray(line.text.length);
-    var pre = lineContent(cm, line, measure, true);
+    var pre = buildLineContent(cm, line, measure, true).pre;
 
     // IE does not cache element positions of inline elements between
     // calls to getBoundingClientRect. This makes the loop below,
@@ -1093,12 +1115,22 @@ window.CodeMirror = (function() {
       if (cur.measureRight) rect.right = getRect(cur.measureRight).left;
       if (cur.leftSide) rect.leftSide = measureRect(getRect(cur.leftSide));
     }
+    removeChildren(cm.display.measure);
     for (var i = 0, cur; i < data.length; ++i) if (cur = data[i]) {
       finishRect(cur);
       if (cur.leftSide) finishRect(cur.leftSide);
       if (cur.rightSide) finishRect(cur.rightSide);
     }
     return data;
+  }
+
+  function crudelyMeasureLine(cm, line) {
+    var copy = new Line(line.text.slice(0, 100), null);
+    if (line.textClass) copy.textClass = line.textClass;
+    var measure = measureLineInner(cm, copy);
+    var left = measureChar(cm, copy, 0, measure, "left");
+    var right = measureChar(cm, copy, 99, measure, "right");
+    return {crude: true, top: left.top, left: left.left, bottom: left.bottom, width: (right.right - left.left) / 100};
   }
 
   function measureLineWidth(cm, line) {
@@ -1108,9 +1140,10 @@ window.CodeMirror = (function() {
       if (sp.collapsed && (sp.to == null || sp.to == line.text.length)) hasBadSpan = true;
     }
     var cached = !hasBadSpan && findCachedMeasurement(cm, line);
-    if (cached) return measureChar(cm, line, line.text.length, cached.measure, "right").right;
+    if (cached || line.text.length >= cm.options.crudeMeasuringFrom)
+      return measureChar(cm, line, line.text.length, cached && cached.measure, "right").right;
 
-    var pre = lineContent(cm, line, null, true);
+    var pre = buildLineContent(cm, line, null, true).pre;
     var end = pre.appendChild(zeroWidthElement(cm.display.measure));
     removeChildrenAndAdd(cm.display.measure, pre);
     return getRect(end).right - getRect(cm.display.lineDiv).left;
@@ -1357,7 +1390,8 @@ window.CodeMirror = (function() {
       display.scroller.scrollLeft = display.scrollbarH.scrollLeft = doc.scrollLeft = newScrollPos.scrollLeft;
       alignHorizontally(cm);
       if (op.scrollToPos)
-        scrollPosIntoView(cm, clipPos(cm.doc, op.scrollToPos), op.scrollToPosMargin);
+        scrollPosIntoView(cm, clipPos(cm.doc, op.scrollToPos.from),
+                          clipPos(cm.doc, op.scrollToPos.to), op.scrollToPos.margin);
     } else if (newScrollPos) {
       scrollCursorIntoView(cm);
     }
@@ -1445,6 +1479,10 @@ window.CodeMirror = (function() {
   function readInput(cm) {
     var input = cm.display.input, prevInput = cm.display.prevInput, doc = cm.doc, sel = doc.sel;
     if (!cm.state.focused || hasSelection(input) || isReadOnly(cm) || cm.state.disableInput) return false;
+    if (cm.state.pasteIncoming && cm.state.fakedLastChar) {
+      input.value = input.value.substring(0, input.value.length - 1);
+      cm.state.fakedLastChar = false;
+    }
     var text = input.value;
     if (text == prevInput && posEq(sel.from, sel.to)) return false;
     if (ie && !ie_lt9 && cm.display.inputHasSelection === text) {
@@ -1575,7 +1613,10 @@ window.CodeMirror = (function() {
       if (signalDOMEvent(cm, e) || cm.options.onKeyEvent && cm.options.onKeyEvent(cm, addStop(e))) return;
       if (e.keyCode == 16) cm.doc.sel.shift = false;
     }));
-    on(d.input, "input", bind(fastPoll, cm));
+    on(d.input, "input", function() {
+      if (ie && !ie_lt9 && cm.display.inputHasSelection) cm.display.inputHasSelection = null;
+      fastPoll(cm);
+    });
     on(d.input, "keydown", operation(cm, onKeyDown));
     on(d.input, "keypress", operation(cm, onKeyPress));
     on(d.input, "focus", bind(onFocus, cm));
@@ -1591,12 +1632,22 @@ window.CodeMirror = (function() {
       on(d.scroller, "dragover", drag_);
       on(d.scroller, "drop", operation(cm, onDrop));
     }
-    on(d.scroller, "paste", function(e){
+    on(d.scroller, "paste", function(e) {
       if (eventInWidget(d, e)) return;
       focusInput(cm);
       fastPoll(cm);
     });
     on(d.input, "paste", function() {
+      // Workaround for webkit bug https://bugs.webkit.org/show_bug.cgi?id=90206
+      // Add a char to the end of textarea before paste occur so that
+      // selection doesn't span to the end of textarea.
+      if (webkit && !cm.state.fakedLastChar && !(new Date - cm.state.lastMiddleDown < 200)) {
+        var start = d.input.selectionStart, end = d.input.selectionEnd;
+        d.input.value += "$";
+        d.input.selectionStart = start;
+        d.input.selectionEnd = end;
+        cm.state.fakedLastChar = true;
+      }
       cm.state.pasteIncoming = true;
       fastPoll(cm);
     });
@@ -1660,6 +1711,7 @@ window.CodeMirror = (function() {
       if (captureMiddleClick) onContextMenu.call(cm, cm, e);
       return;
     case 2:
+      if (webkit) cm.state.lastMiddleDown = +new Date;
       if (start) extendSelection(cm.doc, start);
       setTimeout(bind(focusInput, cm), 20);
       e_preventDefault(e);
@@ -1780,17 +1832,16 @@ window.CodeMirror = (function() {
     on(document, "mouseup", up);
   }
 
-  function clickInGutter(cm, e) {
-    var display = cm.display;
+  function gutterEvent(cm, e, type, prevent, signalfn) {
     try { var mX = e.clientX, mY = e.clientY; }
     catch(e) { return false; }
+    if (mX >= Math.floor(getRect(cm.display.gutters).right)) return false;
+    if (prevent) e_preventDefault(e);
 
-    if (mX >= Math.floor(getRect(display.gutters).right)) return false;
-    e_preventDefault(e);
-    if (!hasHandler(cm, "gutterClick")) return true;
-
+    var display = cm.display;
     var lineBox = getRect(display.lineDiv);
-    if (mY > lineBox.bottom) return true;
+
+    if (mY > lineBox.bottom || !hasHandler(cm, type)) return e_defaultPrevented(e);
     mY -= lineBox.top - display.viewOffset;
 
     for (var i = 0; i < cm.options.gutters.length; ++i) {
@@ -1798,11 +1849,19 @@ window.CodeMirror = (function() {
       if (g && getRect(g).right >= mX) {
         var line = lineAtHeight(cm.doc, mY);
         var gutter = cm.options.gutters[i];
-        signalLater(cm, "gutterClick", cm, line, gutter, e);
-        break;
+        signalfn(cm, type, cm, line, gutter, e);
+        return e_defaultPrevented(e);
       }
     }
-    return true;
+  }
+
+  function contextMenuInGutter(cm, e) {
+    if (!hasHandler(cm, "gutterContextMenu")) return false;
+    return gutterEvent(cm, e, "gutterContextMenu", false, signal);
+  }
+
+  function clickInGutter(cm, e) {
+    return gutterEvent(cm, e, "gutterClick", true, signalLater);
   }
 
   // Kludge to work around strange IE behavior where it'll sometimes
@@ -1865,6 +1924,7 @@ window.CodeMirror = (function() {
     // Recent Safari (~6.0.2) have a tendency to segfault when this happens, so we don't do it there.
     if (e.dataTransfer.setDragImage && !safari) {
       var img = elt("img", null, null, "position: fixed; left: 0; top: 0;");
+      img.src = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
       if (opera) {
         img.width = img.height = 1;
         cm.display.wrapper.appendChild(img);
@@ -2063,8 +2123,8 @@ window.CodeMirror = (function() {
   function onKeyDown(e) {
     var cm = this;
     if (!cm.state.focused) onFocus(cm);
-    if (ie && e.keyCode == 27) { e.returnValue = false; }
     if (signalDOMEvent(cm, e) || cm.options.onKeyEvent && cm.options.onKeyEvent(cm, addStop(e))) return;
+    if (ie && e.keyCode == 27) e.returnValue = false;
     var code = e.keyCode;
     // IE does strange things with escape.
     cm.doc.sel.shift = code == 16 || e.shiftKey;
@@ -2101,7 +2161,10 @@ window.CodeMirror = (function() {
       cm.state.focused = true;
       if (cm.display.wrapper.className.search(/\bCodeMirror-focused\b/) == -1)
         cm.display.wrapper.className += " CodeMirror-focused";
-      resetInput(cm, true);
+      if (!cm.curOp) {
+        resetInput(cm, true);
+        if (webkit) setTimeout(bind(resetInput, cm, true), 0); // Issue #1730
+      }
     }
     slowPoll(cm);
     restartBlink(cm);
@@ -2120,11 +2183,15 @@ window.CodeMirror = (function() {
   function onContextMenu(cm, e) {
     if (signalDOMEvent(cm, e, "contextmenu")) return;
     var display = cm.display, sel = cm.doc.sel;
-    if (eventInWidget(display, e)) return;
+    if (eventInWidget(display, e) || contextMenuInGutter(cm, e)) return;
 
     var pos = posFromMouse(cm, e), scrollPos = display.scroller.scrollTop;
     if (!pos || opera) return; // Opera is difficult.
-    if (posEq(sel.from, sel.to) || posLess(pos, sel.from) || !posLess(pos, sel.to))
+
+    // Reset the current text selection only if the click is done outside of the selection
+    // and 'resetSelectionOnContextMenu' option is true.
+    var reset = cm.options.resetSelectionOnContextMenu;
+    if (reset && (posEq(sel.from, sel.to) || posLess(pos, sel.from) || !posLess(pos, sel.to)))
       operation(cm, setSelection)(cm.doc, pos, pos);
 
     var oldCSS = display.input.style.cssText;
@@ -2139,8 +2206,8 @@ window.CodeMirror = (function() {
 
     function prepareSelectAllHack() {
       if (display.input.selectionStart != null) {
-        var extval = display.input.value = " " + (posEq(sel.from, sel.to) ? "" : display.input.value);
-        display.prevInput = " ";
+        var extval = display.input.value = "\u200b" + (posEq(sel.from, sel.to) ? "" : display.input.value);
+        display.prevInput = "\u200b";
         display.input.selectionStart = 1; display.input.selectionEnd = extval.length;
       }
     }
@@ -2274,6 +2341,7 @@ window.CodeMirror = (function() {
   }
 
   function makeChangeNoReadonly(doc, change, selUpdate) {
+    if (change.text.length == 1 && change.text[0] == "" && posEq(change.from, change.to)) return;
     var selAfter = computeSelAfterChange(doc, change, selUpdate);
     addToHistory(doc, change, selAfter, doc.cm ? doc.cm.curOp.id : NaN);
 
@@ -2496,6 +2564,7 @@ window.CodeMirror = (function() {
 
     var sel = doc.sel;
     sel.goalColumn = null;
+    if (bias == null) bias = posLess(head, sel.head) ? -1 : 1;
     // Skip over atomic spans.
     if (checkAtomic || !posEq(anchor, sel.anchor))
       anchor = skipAtomic(doc, anchor, bias, checkAtomic != "push");
@@ -2573,7 +2642,7 @@ window.CodeMirror = (function() {
   // SCROLLING
 
   function scrollCursorIntoView(cm) {
-    var coords = scrollPosIntoView(cm, cm.doc.sel.head, cm.options.cursorScrollMargin);
+    var coords = scrollPosIntoView(cm, cm.doc.sel.head, null, cm.options.cursorScrollMargin);
     if (!cm.state.focused) return;
     var display = cm.display, box = getRect(display.sizer), doScroll = null;
     if (coords.top + box.top < 0) doScroll = true;
@@ -2590,11 +2659,15 @@ window.CodeMirror = (function() {
     }
   }
 
-  function scrollPosIntoView(cm, pos, margin) {
+  function scrollPosIntoView(cm, pos, end, margin) {
     if (margin == null) margin = 0;
     for (;;) {
       var changed = false, coords = cursorCoords(cm, pos);
-      var scrollPos = calculateScrollPos(cm, coords.left, coords.top - margin, coords.left, coords.bottom + margin);
+      var endCoords = !end || end == pos ? coords : cursorCoords(cm, end);
+      var scrollPos = calculateScrollPos(cm, Math.min(coords.left, endCoords.left),
+                                         Math.min(coords.top, endCoords.top) - margin,
+                                         Math.max(coords.left, endCoords.left),
+                                         Math.max(coords.bottom, endCoords.bottom) + margin);
       var startTop = cm.doc.scrollTop, startLeft = cm.doc.scrollLeft;
       if (scrollPos.scrollTop != null) {
         setScrollTop(cm, scrollPos.scrollTop);
@@ -3112,17 +3185,23 @@ window.CodeMirror = (function() {
               clientHeight: scroller.clientHeight - co, clientWidth: scroller.clientWidth - co};
     },
 
-    scrollIntoView: operation(null, function(pos, margin) {
-      if (typeof pos == "number") pos = Pos(pos, 0);
+    scrollIntoView: operation(null, function(range, margin) {
+      if (range == null) range = {from: this.doc.sel.head, to: null};
+      else if (typeof range == "number") range = {from: Pos(range, 0), to: null};
+      else if (range.from == null) range = {from: range, to: null};
+      if (!range.to) range.to = range.from;
       if (!margin) margin = 0;
-      var coords = pos;
 
-      if (!pos || pos.line != null) {
-        this.curOp.scrollToPos = pos ? clipPos(this.doc, pos) : this.doc.sel.head;
-        this.curOp.scrollToPosMargin = margin;
-        coords = cursorCoords(this, this.curOp.scrollToPos);
+      var coords = range;
+      if (range.from.line != null) {
+        this.curOp.scrollToPos = {from: range.from, to: range.to, margin: margin};
+        coords = {from: cursorCoords(this, range.from),
+                  to: cursorCoords(this, range.to)};
       }
-      var sPos = calculateScrollPos(this, coords.left, coords.top - margin, coords.right, coords.bottom + margin);
+      var sPos = calculateScrollPos(this, Math.min(coords.from.left, coords.to.left),
+                                    Math.min(coords.from.top, coords.to.top) - margin,
+                                    Math.max(coords.from.right, coords.to.right),
+                                    Math.max(coords.from.bottom, coords.to.bottom) + margin);
       updateScrollPos(this, sPos.scrollLeft, sPos.scrollTop);
     }),
 
@@ -3140,9 +3219,11 @@ window.CodeMirror = (function() {
     operation: function(f){return runInOp(this, f);},
 
     refresh: operation(null, function() {
+      var badHeight = this.display.cachedTextHeight == null;
       clearCaches(this);
       updateScrollPos(this, this.doc.scrollLeft, this.doc.scrollTop);
       regChange(this);
+      if (badHeight) estimateLineHeights(this);
     }),
 
     swapDoc: operation(null, function(doc) {
@@ -3152,6 +3233,7 @@ window.CodeMirror = (function() {
       clearCaches(this);
       resetInput(this, true);
       updateScrollPos(this, doc.scrollLeft, doc.scrollTop);
+      signalLater(this, "swapDoc", this, old);
       return old;
     }),
 
@@ -3226,6 +3308,8 @@ window.CodeMirror = (function() {
   option("lineNumberFormatter", function(integer) {return integer;}, guttersChanged, true);
   option("showCursorWhenSelecting", false, updateSelection, true);
 
+  option("resetSelectionOnContextMenu", true);
+
   option("readOnly", false, function(cm, val) {
     if (val == "nocursor") {onBlur(cm); cm.display.input.blur();}
     else if (!val) resetInput(cm, true);
@@ -3243,6 +3327,7 @@ window.CodeMirror = (function() {
   option("historyEventDelay", 500);
   option("viewportMargin", 10, function(cm){cm.refresh();}, true);
   option("maxHighlightLength", 10000, function(cm){loadMode(cm); cm.refresh();}, true);
+  option("crudeMeasuringFrom", 10000);
   option("moveInputWithCursor", true, function(cm, val) {
     if (!val) cm.display.inputDiv.style.top = cm.display.inputDiv.style.left = 0;
   });
@@ -3461,7 +3546,8 @@ window.CodeMirror = (function() {
   keyMap.basic = {
     "Left": "goCharLeft", "Right": "goCharRight", "Up": "goLineUp", "Down": "goLineDown",
     "End": "goLineEnd", "Home": "goLineStartSmart", "PageUp": "goPageUp", "PageDown": "goPageDown",
-    "Delete": "delCharAfter", "Backspace": "delCharBefore", "Tab": "defaultTab", "Shift-Tab": "indentAuto",
+    "Delete": "delCharAfter", "Backspace": "delCharBefore", "Shift-Backspace": "delCharBefore",
+    "Tab": "defaultTab", "Shift-Tab": "indentAuto",
     "Enter": "newlineAndIndent", "Insert": "toggleOverwrite"
   };
   // Note that the save and find-related commands aren't defined by
@@ -3732,9 +3818,10 @@ window.CodeMirror = (function() {
   TextMarker.prototype.changed = function() {
     var pos = this.find(), cm = this.doc.cm;
     if (!pos || !cm) return;
-    var line = getLine(this.doc, pos.from.line);
+    if (this.type != "bookmark") pos = pos.from;
+    var line = getLine(this.doc, pos.line);
     clearCachedMeasurement(cm, line);
-    if (pos.from.line >= cm.display.showingFrom && pos.from.line < cm.display.showingTo) {
+    if (pos.line >= cm.display.showingFrom && pos.line < cm.display.showingTo) {
       for (var node = cm.display.lineDiv.firstChild; node; node = node.nextSibling) if (node.lineObj == line) {
         if (node.offsetHeight != line.height) updateLineHeight(line, node.offsetHeight);
         break;
@@ -4184,8 +4271,7 @@ window.CodeMirror = (function() {
     while (!stream.eol()) {
       if (stream.pos > cm.options.maxHighlightLength) {
         flattenSpans = false;
-        // Webkit seems to refuse to render text nodes longer than 57444 characters
-        stream.pos = Math.min(text.length, stream.start + 50000);
+        stream.pos = text.length;
         style = null;
       } else {
         style = mode.token(stream, state);
@@ -4196,7 +4282,12 @@ window.CodeMirror = (function() {
       }
       stream.start = stream.pos;
     }
-    if (curStart < stream.pos) f(stream.pos, curStyle);
+    while (curStart < stream.pos) {
+      // Webkit seems to refuse to render text nodes longer than 57444 characters
+      var pos = Math.min(stream.pos, curStart + 50000);
+      f(pos, curStyle);
+      curStart = pos;
+    }
   }
 
   function highlightLine(cm, line, state) {
@@ -4254,13 +4345,23 @@ window.CodeMirror = (function() {
   }
 
   var styleToClassCache = {};
-  function styleToClass(style) {
+  function interpretTokenStyle(style, builder) {
     if (!style) return null;
+    for (;;) {
+      var lineClass = style.match(/(?:^|\s)line-(background-)?(\S+)/);
+      if (!lineClass) break;
+      style = style.slice(0, lineClass.index) + style.slice(lineClass.index + lineClass[0].length);
+      var prop = lineClass[1] ? "bgClass" : "textClass";
+      if (builder[prop] == null)
+        builder[prop] = lineClass[2];
+      else if (!(new RegExp("(?:^|\s)" + lineClass[2] + "(?:$|\s)")).test(builder[prop]))
+        builder[prop] += " " + lineClass[2];
+    }
     return styleToClassCache[style] ||
       (styleToClassCache[style] = "cm-" + style.replace(/ +/g, " cm-"));
   }
 
-  function lineContent(cm, realLine, measure, copyWidgets) {
+  function buildLineContent(cm, realLine, measure, copyWidgets) {
     var merged, line = realLine, empty = true;
     while (merged = collapsedSpanAtStart(line))
       line = getLine(cm.doc, merged.find().from.line);
@@ -4268,7 +4369,6 @@ window.CodeMirror = (function() {
     var builder = {pre: elt("pre"), col: 0, pos: 0,
                    measure: null, measuredSomething: false, cm: cm,
                    copyWidgets: copyWidgets};
-    if (line.textClass) builder.pre.className = line.textClass;
 
     do {
       if (line.text) empty = false;
@@ -4305,8 +4405,11 @@ window.CodeMirror = (function() {
       }
     }
 
+    var textClass = builder.textClass ? builder.textClass + " " + (realLine.textClass || "") : realLine.textClass;
+    if (textClass) builder.pre.className = textClass;
+
     signal(cm, "renderLine", cm, realLine, builder.pre);
-    return builder.pre;
+    return builder;
   }
 
   var tokenSpecialChars = /[\t\u0000-\u0019\u00ad\u200b\u2028\u2029\uFEFF]/g;
@@ -4384,7 +4487,7 @@ window.CodeMirror = (function() {
       return out;
     }
     return function(builder, text, style, startStyle, endStyle, title) {
-      return inner(builder, text.replace(/ {3,}/, split), style, startStyle, endStyle, title);
+      return inner(builder, text.replace(/ {3,}/g, split), style, startStyle, endStyle, title);
     };
   }
 
@@ -4397,11 +4500,13 @@ window.CodeMirror = (function() {
         if (size) {
           builder.measure[builder.pos] = widget;
         } else {
-          var elt = builder.measure[builder.pos] = zeroWidthElement(builder.cm.display.measure);
-          if (marker.type != "bookmark" || marker.insertLeft)
-            builder.pre.insertBefore(elt, widget);
+          var elt = zeroWidthElement(builder.cm.display.measure);
+          if (marker.type == "bookmark" && !marker.insertLeft)
+            builder.measure[builder.pos] = builder.pre.appendChild(elt);
+          else if (builder.measure[builder.pos])
+            return;
           else
-            builder.pre.appendChild(elt);
+            builder.measure[builder.pos] = builder.pre.insertBefore(elt, widget);
         }
         builder.measuredSomething = true;
       }
@@ -4415,7 +4520,7 @@ window.CodeMirror = (function() {
     var spans = line.markedSpans, allText = line.text, at = 0;
     if (!spans) {
       for (var i = 1; i < styles.length; i+=2)
-        builder.addToken(builder, allText.slice(at, at = styles[i]), styleToClass(styles[i+1]));
+        builder.addToken(builder, allText.slice(at, at = styles[i]), interpretTokenStyle(styles[i+1], builder));
       return;
     }
 
@@ -4425,7 +4530,7 @@ window.CodeMirror = (function() {
       if (nextChange == pos) { // Update current marker set
         spanStyle = spanEndStyle = spanStartStyle = title = "";
         collapsed = null; nextChange = Infinity;
-        var foundBookmark = null;
+        var foundBookmarks = [];
         for (var j = 0; j < spans.length; ++j) {
           var sp = spans[j], m = sp.marker;
           if (sp.from <= pos && (sp.to == null || sp.to > pos)) {
@@ -4439,14 +4544,15 @@ window.CodeMirror = (function() {
           } else if (sp.from > pos && nextChange > sp.from) {
             nextChange = sp.from;
           }
-          if (m.type == "bookmark" && sp.from == pos && m.replacedWith) foundBookmark = m;
+          if (m.type == "bookmark" && sp.from == pos && m.replacedWith) foundBookmarks.push(m);
         }
         if (collapsed && (collapsed.from || 0) == pos) {
           buildCollapsedSpan(builder, (collapsed.to == null ? len : collapsed.to) - pos,
                              collapsed.marker, collapsed.from == null);
           if (collapsed.to == null) return collapsed.marker.find();
         }
-        if (foundBookmark && !collapsed) buildCollapsedSpan(builder, 0, foundBookmark);
+        if (!collapsed && foundBookmarks.length) for (var j = 0; j < foundBookmarks.length; ++j)
+          buildCollapsedSpan(builder, 0, foundBookmarks[j]);
       }
       if (pos >= len) break;
 
@@ -4464,7 +4570,7 @@ window.CodeMirror = (function() {
           spanStartStyle = "";
         }
         text = allText.slice(at, at = styles[i++]);
-        style = styleToClass(styles[i++]);
+        style = interpretTokenStyle(styles[i++], builder);
       }
     }
   }
@@ -4742,11 +4848,11 @@ window.CodeMirror = (function() {
       if (extend) extendSelection(this, pos);
       else setSelection(this, pos, pos);
     }),
-    setSelection: docOperation(function(anchor, head) {
-      setSelection(this, clipPos(this, anchor), clipPos(this, head || anchor));
+    setSelection: docOperation(function(anchor, head, bias) {
+      setSelection(this, clipPos(this, anchor), clipPos(this, head || anchor), bias);
     }),
-    extendSelection: docOperation(function(from, to) {
-      extendSelection(this, clipPos(this, from), to && clipPos(this, to));
+    extendSelection: docOperation(function(from, to, bias) {
+      extendSelection(this, clipPos(this, from), to && clipPos(this, to), bias);
     }),
 
     getSelection: function(lineSep) {return this.getRange(this.sel.from, this.sel.to, lineSep);},
@@ -5432,13 +5538,18 @@ window.CodeMirror = (function() {
     spanAffectsWrapping = function(str, i) {
       return /\-[^ \-?]|\?[^ !\'\"\),.\-\/:;\?\]\}]/.test(str.slice(i - 1, i + 1));
     };
-  else if (webkit && !/Chrome\/(?:29|[3-9]\d|\d\d\d)\./.test(navigator.userAgent))
+  else if (webkit && /Chrome\/(?:29|[3-9]\d|\d\d\d)\./.test(navigator.userAgent))
+    spanAffectsWrapping = function(str, i) {
+      var code = str.charCodeAt(i - 1);
+      return code >= 8208 && code <= 8212;
+    };
+  else if (webkit)
     spanAffectsWrapping = function(str, i) {
       if (i > 1 && str.charCodeAt(i - 1) == 45) {
         if (/\w/.test(str.charAt(i - 2)) && /[^\-?\.]/.test(str.charAt(i))) return true;
         if (i > 2 && /[\d\.,]/.test(str.charAt(i - 2)) && /[\d\.,]/.test(str.charAt(i))) return false;
       }
-      return /[~!#%&*)=+}\]|\"\.>,:;][({[<]|-[^\-?\.\u2010-\u201f\u2026]|\?[\w~`@#$%\^&*(_=+{[|><]|…[\w~`@#$%\^&*(_=+{[><]/.test(str.slice(i - 1, i + 1));
+      return /[~!#%&*)=+}\]\\|\"\.>,:;][({[<]|-[^\-?\.\u2010-\u201f\u2026]|\?[\w~`@#$%\^&*(_=+{[|><]|…[\w~`@#$%\^&*(_=+{[><]/.test(str.slice(i - 1, i + 1));
     };
 
   var knownScrollbarWidth;
@@ -5794,10 +5905,258 @@ window.CodeMirror = (function() {
 
   // THE END
 
-  CodeMirror.version = "3.15.0";
+  CodeMirror.version = "3.19.0";
 
   return CodeMirror;
 })();
+
+
+/*global jQuery, Ghost, document, Image, window */
+(function ($) {
+    "use strict";
+
+    var UploadUi;
+
+
+    UploadUi = function ($dropzone, settings) {
+        var $url = '<div class="js-url"><input class="url js-upload-url" type="url" placeholder="http://"/></div>',
+            $cancel = '<a class="image-cancel js-cancel" title="Delete"><span class="hidden">Delete</span></a>',
+            $progress =  $('<div />', {
+                "class" : "js-upload-progress progress progress-success active",
+                "role": "progressbar",
+                "aria-valuemin": "0",
+                "aria-valuemax": "100"
+            }).append($("<div />", {
+                "class": "js-upload-progress-bar bar",
+                "style": "width:0%"
+            }));
+
+        $.extend(this, {
+            complete: function (result) {
+                var self = this;
+
+                function showImage(width, height) {
+                    $dropzone.find('img.js-upload-target').attr({"width": width, "height": height}).css({"display": "block"});
+                    $dropzone.find('.fileupload-loading').remove();
+                    $dropzone.css({"height": "auto"});
+                    $dropzone.delay(250).animate({opacity: 100}, 1000, function () {
+                        self.init();
+                    });
+                }
+
+                function animateDropzone($img) {
+                    $dropzone.animate({opacity: 0}, 250, function () {
+                        $dropzone.removeClass('image-uploader').addClass('pre-image-uploader');
+                        $dropzone.css({minHeight: 0});
+                        self.removeExtras();
+                        $dropzone.animate({height: $img.height()}, 250, function () {
+                            showImage($img.width(), $img.height());
+                        });
+                    });
+                }
+
+                function preLoadImage() {
+                    var $img = $dropzone.find('img.js-upload-target')
+                        .attr({'src': '', "width": 'auto', "height": 'auto'});
+
+                    $progress.animate({"opacity": 0}, 250, function () {
+                        $dropzone.find('span.media').after('<img class="fileupload-loading"  src="/ghost/img/loadingcat.gif" />');
+                        if (!settings.editor) {$progress.find('.fileupload-loading').css({"top": "56px"}); }
+                    });
+                    $dropzone.trigger("uploadsuccess", [result]);
+                    $img.one('load', function () {
+                        animateDropzone($img);
+                    }).attr('src', result);
+                }
+                preLoadImage();
+            },
+
+            bindFileUpload: function () {
+                var self = this;
+
+                $dropzone.find('.js-fileupload').fileupload().fileupload("option", {
+                    url: '/ghost/upload/',
+                    headers: {
+                        'X-CSRF-Token': $("meta[name='csrf-param']").attr('content')
+                    },
+                    add: function (e, data) {
+                        /*jslint unparam:true*/
+                        $dropzone.find('.js-fileupload').removeClass('right');
+                        $dropzone.find('.js-url, button.centre').remove();
+                        $progress.find('.js-upload-progress-bar').removeClass('fail');
+                        $dropzone.trigger('uploadstart', [$dropzone.attr('id')]);
+                        $dropzone.find('span.media, div.description, a.image-url, a.image-webcam')
+                            .animate({opacity: 0}, 250, function () {
+                                $dropzone.find('div.description').hide().css({"opacity": 100});
+                                if (settings.progressbar) {
+                                    $dropzone.find('div.js-fail').after($progress);
+                                    $progress.animate({opacity: 100}, 250);
+                                }
+                                data.submit();
+                            });
+                    },
+                    dropZone: settings.fileStorage ? $dropzone : null,
+                    progressall: function (e, data) {
+                        /*jslint unparam:true*/
+                        var progress = parseInt(data.loaded / data.total * 100, 10);
+                        if (!settings.editor) {$progress.find('div.js-progress').css({"position": "absolute", "top": "40px"}); }
+                        if (settings.progressbar) {
+                            $dropzone.trigger("uploadprogress", [progress, data]);
+                            $progress.find('.js-upload-progress-bar').css('width', progress + '%');
+                        }
+                    },
+                    fail: function (e, data) {
+                        /*jslint unparam:true*/
+                        $dropzone.trigger("uploadfailure", [data.result]);
+                        $dropzone.find('.js-upload-progress-bar').addClass('fail');
+                        if (data.jqXHR.status === 413) {
+                            $dropzone.find('div.js-fail').text("The image you uploaded was too big.");
+                        } else if (data.jqXHR.status === 415) {
+                            $dropzone.find('div.js-fail').text("The image type you uploaded is not supported. Please use .PNG, .JPG, .GIF, .SVG.");
+                        } else {
+                            $dropzone.find('div.js-fail').text("Something went wrong :(");
+                        }
+                        $dropzone.find('div.js-fail, button.js-fail').fadeIn(1500);
+                        $dropzone.find('button.js-fail').on('click', function () {
+                            $dropzone.css({minHeight: 0});
+                            $dropzone.find('div.description').show();
+                            self.removeExtras();
+                            self.init();
+                        });
+                    },
+                    done: function (e, data) {
+                        /*jslint unparam:true*/
+                        self.complete(data.result);
+                    }
+                });
+            },
+
+            buildExtras: function () {
+                if (!$dropzone.find('span.media')[0]) {
+                    $dropzone.prepend('<span class="media"><span class="hidden">Image Upload</span></span>');
+                }
+                if (!$dropzone.find('div.description')[0]) {
+                    $dropzone.append('<div class="description">Add image</div>');
+                }
+                if (!$dropzone.find('div.js-fail')[0]) {
+                    $dropzone.append('<div class="js-fail failed" style="display: none">Something went wrong :(</div>');
+                }
+                if (!$dropzone.find('button.js-fail')[0]) {
+                    $dropzone.append('<button class="js-fail button-add" style="display: none">Try Again</button>');
+                }
+                if (!$dropzone.find('a.image-url')[0]) {
+                    $dropzone.append('<a class="image-url" title="Add image from URL"><span class="hidden">URL</span></a>');
+                }
+//                if (!$dropzone.find('a.image-webcam')[0]) {
+//                    $dropzone.append('<a class="image-webcam" title="Add image from webcam"><span class="hidden">Webcam</span></a>');
+//                }
+            },
+
+            removeExtras: function () {
+                $dropzone.find('span.media, div.js-upload-progress, a.image-url, a.image-webcam, div.js-fail, button.js-fail, a.js-cancel').remove();
+            },
+
+            initWithDropzone: function () {
+                var self = this;
+                //This is the start point if no image exists
+                $dropzone.find('img.js-upload-target').css({"display": "none"});
+                $dropzone.removeClass('pre-image-uploader image-uploader-url').addClass('image-uploader');
+                this.removeExtras();
+                this.buildExtras();
+                this.bindFileUpload();
+                if (!settings.fileStorage) {
+                    self.initUrl();
+                    return;
+                }
+                $dropzone.find('a.image-url').on('click', function () {
+                    self.initUrl();
+                });
+            },
+            initUrl: function () {
+                var self = this, val;
+                this.removeExtras();
+                $dropzone.addClass('image-uploader-url').removeClass('pre-image-uploader');
+                $dropzone.find('.js-fileupload').addClass('right');
+                if (settings.fileStorage) {
+                    $dropzone.append($cancel);
+                }
+                $dropzone.find('.js-cancel').on('click', function () {
+                    $dropzone.find('.js-url').remove();
+                    $dropzone.find('.js-fileupload').removeClass('right');
+                    $dropzone.find('button.centre').remove();
+                    self.removeExtras();
+                    self.initWithDropzone();
+                });
+                if (settings.editor) {
+                    $dropzone.find('div.description').after('<button class="js-button-accept button-save centre">Save</button>');
+                }
+                $dropzone.find('div.description').before($url);
+
+                $dropzone.find('.js-button-accept').on('click', function () {
+                    val = $dropzone.find('.js-upload-url').val();
+                    $dropzone.find('div.description').hide();
+                    $dropzone.find('.js-fileupload').removeClass('right');
+                    $dropzone.find('.js-url').remove();
+                    $dropzone.find('button.centre').remove();
+                    if (val === "") {
+                        $dropzone.trigger("uploadsuccess", 'http://');
+                        self.initWithDropzone();
+                    } else {
+                        self.complete(val);
+                    }
+                });
+            },
+            initWithImage: function () {
+                var self = this;
+                // This is the start point if an image already exists
+                $dropzone.removeClass('image-uploader image-uploader-url').addClass('pre-image-uploader');
+                $dropzone.find('div.description').hide();
+                $dropzone.append($cancel);
+                $dropzone.find('.js-cancel').on('click', function () {
+                    $dropzone.find('img.js-upload-target').attr({'src': ''});
+                    $dropzone.find('div.description').show();
+                    $dropzone.delay(2500).animate({opacity: 100}, 1000, function () {
+                        self.init();
+                    });
+
+                    $dropzone.trigger("uploadsuccess", 'http://');
+                    self.initWithDropzone();
+                });
+            },
+
+            init: function () {
+                // First check if field image is defined by checking for js-upload-target class
+                if (!$dropzone.find('img.js-upload-target')[0]) {
+                    // This ensures there is an image we can hook into to display uploaded image
+                    $dropzone.prepend('<img class="js-upload-target" style="display: none"  src="" />');
+                }
+
+                if ($dropzone.find('img.js-upload-target').attr('src') === '') {
+                    this.initWithDropzone();
+                } else {
+                    this.initWithImage();
+                }
+            }
+        });
+    };
+
+
+    $.fn.upload = function (options) {
+        var settings = $.extend({
+            progressbar: true,
+            editor: false,
+            fileStorage: true
+        }, options);
+        return this.each(function () {
+            var $dropzone = $(this),
+                ui;
+
+            ui = new UploadUi($dropzone, settings);
+            ui.init();
+        });
+    };
+}(jQuery));
+
 
 CodeMirror.defineMode("markdown", function(cmCfg, modeCfg) {
 
@@ -6336,6 +6695,180 @@ CodeMirror.defineMIME("text/x-markdown", "markdown");
 // Showdown namespace
 //
 var Showdown={extensions:{}},forEach=Showdown.forEach=function(a,b){if(typeof a.forEach=="function")a.forEach(b);else{var c,d=a.length;for(c=0;c<d;c++)b(a[c],c,a)}},stdExtName=function(a){return a.replace(/[_-]||\s/g,"").toLowerCase()};Showdown.converter=function(a){var b,c,d,e=0,f=[],g=[];if(typeof module!="undefind"&&typeof exports!="undefined"&&typeof require!="undefind"){var h=require("fs");if(h){var i=h.readdirSync((__dirname||".")+"/extensions").filter(function(a){return~a.indexOf(".js")}).map(function(a){return a.replace(/\.js$/,"")});Showdown.forEach(i,function(a){var b=stdExtName(a);Showdown.extensions[b]=require("./extensions/"+a)})}}this.makeHtml=function(a){return b={},c={},d=[],a=a.replace(/~/g,"~T"),a=a.replace(/\$/g,"~D"),a=a.replace(/\r\n/g,"\n"),a=a.replace(/\r/g,"\n"),a="\n\n"+a+"\n\n",a=M(a),a=a.replace(/^[ \t]+$/mg,""),Showdown.forEach(f,function(b){a=k(b,a)}),a=z(a),a=m(a),a=l(a),a=o(a),a=K(a),a=a.replace(/~D/g,"$$"),a=a.replace(/~T/g,"~"),Showdown.forEach(g,function(b){a=k(b,a)}),a};if(a&&a.extensions){var j=this;Showdown.forEach(a.extensions,function(a){typeof a=="string"&&(a=Showdown.extensions[stdExtName(a)]);if(typeof a!="function")throw"Extension '"+a+"' could not be loaded.  It was either not found or is not a valid extension.";Showdown.forEach(a(j),function(a){a.type?a.type==="language"||a.type==="lang"?f.push(a):(a.type==="output"||a.type==="html")&&g.push(a):g.push(a)})})}var k=function(a,b){if(a.regex){var c=new RegExp(a.regex,"g");return b.replace(c,a.replace)}if(a.filter)return a.filter(b)},l=function(a){return a+="~0",a=a.replace(/^[ ]{0,3}\[(.+)\]:[ \t]*\n?[ \t]*<?(\S+?)>?[ \t]*\n?[ \t]*(?:(\n*)["(](.+?)[")][ \t]*)?(?:\n+|(?=~0))/gm,function(a,d,e,f,g){return d=d.toLowerCase(),b[d]=G(e),f?f+g:(g&&(c[d]=g.replace(/"/g,"&quot;")),"")}),a=a.replace(/~0/,""),a},m=function(a){a=a.replace(/\n/g,"\n\n");var b="p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math|ins|del|style|section|header|footer|nav|article|aside",c="p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math|style|section|header|footer|nav|article|aside";return a=a.replace(/^(<(p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math|ins|del)\b[^\r]*?\n<\/\2>[ \t]*(?=\n+))/gm,n),a=a.replace(/^(<(p|div|h[1-6]|blockquote|pre|table|dl|ol|ul|script|noscript|form|fieldset|iframe|math|style|section|header|footer|nav|article|aside)\b[^\r]*?<\/\2>[ \t]*(?=\n+)\n)/gm,n),a=a.replace(/(\n[ ]{0,3}(<(hr)\b([^<>])*?\/?>)[ \t]*(?=\n{2,}))/g,n),a=a.replace(/(\n\n[ ]{0,3}<!(--[^\r]*?--\s*)+>[ \t]*(?=\n{2,}))/g,n),a=a.replace(/(?:\n\n)([ ]{0,3}(?:<([?%])[^\r]*?\2>)[ \t]*(?=\n{2,}))/g,n),a=a.replace(/\n\n/g,"\n"),a},n=function(a,b){var c=b;return c=c.replace(/\n\n/g,"\n"),c=c.replace(/^\n/,""),c=c.replace(/\n+$/g,""),c="\n\n~K"+(d.push(c)-1)+"K\n\n",c},o=function(a){a=v(a);var b=A("<hr />");return a=a.replace(/^[ ]{0,2}([ ]?\*[ ]?){3,}[ \t]*$/gm,b),a=a.replace(/^[ ]{0,2}([ ]?\-[ ]?){3,}[ \t]*$/gm,b),a=a.replace(/^[ ]{0,2}([ ]?\_[ ]?){3,}[ \t]*$/gm,b),a=x(a),a=y(a),a=E(a),a=m(a),a=F(a),a},p=function(a){return a=B(a),a=q(a),a=H(a),a=t(a),a=r(a),a=I(a),a=G(a),a=D(a),a=a.replace(/  +\n/g," <br />\n"),a},q=function(a){var b=/(<[a-z\/!$]("[^"]*"|'[^']*'|[^'">])*>|<!(--.*?--\s*)+>)/gi;return a=a.replace(b,function(a){var b=a.replace(/(.)<\/?code>(?=.)/g,"$1`");return b=N(b,"\\`*_"),b}),a},r=function(a){return a=a.replace(/(\[((?:\[[^\]]*\]|[^\[\]])*)\][ ]?(?:\n[ ]*)?\[(.*?)\])()()()()/g,s),a=a.replace(/(\[((?:\[[^\]]*\]|[^\[\]])*)\]\([ \t]*()<?(.*?(?:\(.*?\).*?)?)>?[ \t]*((['"])(.*?)\6[ \t]*)?\))/g,s),a=a.replace(/(\[([^\[\]]+)\])()()()()()/g,s),a},s=function(a,d,e,f,g,h,i,j){j==undefined&&(j="");var k=d,l=e,m=f.toLowerCase(),n=g,o=j;if(n==""){m==""&&(m=l.toLowerCase().replace(/ ?\n/g," ")),n="#"+m;if(b[m]!=undefined)n=b[m],c[m]!=undefined&&(o=c[m]);else{if(!(k.search(/\(\s*\)$/m)>-1))return k;n=""}}n=N(n,"*_");var p='<a href="'+n+'"';return o!=""&&(o=o.replace(/"/g,"&quot;"),o=N(o,"*_"),p+=' title="'+o+'"'),p+=">"+l+"</a>",p},t=function(a){return a=a.replace(/(!\[(.*?)\][ ]?(?:\n[ ]*)?\[(.*?)\])()()()()/g,u),a=a.replace(/(!\[(.*?)\]\s?\([ \t]*()<?(\S+?)>?[ \t]*((['"])(.*?)\6[ \t]*)?\))/g,u),a},u=function(a,d,e,f,g,h,i,j){var k=d,l=e,m=f.toLowerCase(),n=g,o=j;o||(o="");if(n==""){m==""&&(m=l.toLowerCase().replace(/ ?\n/g," ")),n="#"+m;if(b[m]==undefined)return k;n=b[m],c[m]!=undefined&&(o=c[m])}l=l.replace(/"/g,"&quot;"),n=N(n,"*_");var p='<img src="'+n+'" alt="'+l+'"';return o=o.replace(/"/g,"&quot;"),o=N(o,"*_"),p+=' title="'+o+'"',p+=" />",p},v=function(a){function b(a){return a.replace(/[^\w]/g,"").toLowerCase()}return a=a.replace(/^(.+)[ \t]*\n=+[ \t]*\n+/gm,function(a,c){return A('<h1 id="'+b(c)+'">'+p(c)+"</h1>")}),a=a.replace(/^(.+)[ \t]*\n-+[ \t]*\n+/gm,function(a,c){return A('<h2 id="'+b(c)+'">'+p(c)+"</h2>")}),a=a.replace(/^(\#{1,6})[ \t]*(.+?)[ \t]*\#*\n+/gm,function(a,c,d){var e=c.length;return A("<h"+e+' id="'+b(d)+'">'+p(d)+"</h"+e+">")}),a},w,x=function(a){a+="~0";var b=/^(([ ]{0,3}([*+-]|\d+[.])[ \t]+)[^\r]+?(~0|\n{2,}(?=\S)(?![ \t]*(?:[*+-]|\d+[.])[ \t]+)))/gm;return e?a=a.replace(b,function(a,b,c){var d=b,e=c.search(/[*+-]/g)>-1?"ul":"ol";d=d.replace(/\n{2,}/g,"\n\n\n");var f=w(d);return f=f.replace(/\s+$/,""),f="<"+e+">"+f+"</"+e+">\n",f}):(b=/(\n\n|^\n?)(([ ]{0,3}([*+-]|\d+[.])[ \t]+)[^\r]+?(~0|\n{2,}(?=\S)(?![ \t]*(?:[*+-]|\d+[.])[ \t]+)))/g,a=a.replace(b,function(a,b,c,d){var e=b,f=c,g=d.search(/[*+-]/g)>-1?"ul":"ol",f=f.replace(/\n{2,}/g,"\n\n\n"),h=w(f);return h=e+"<"+g+">\n"+h+"</"+g+">\n",h})),a=a.replace(/~0/,""),a};w=function(a){return e++,a=a.replace(/\n{2,}$/,"\n"),a+="~0",a=a.replace(/(\n)?(^[ \t]*)([*+-]|\d+[.])[ \t]+([^\r]+?(\n{1,2}))(?=\n*(~0|\2([*+-]|\d+[.])[ \t]+))/gm,function(a,b,c,d,e){var f=e,g=b,h=c;return g||f.search(/\n{2,}/)>-1?f=o(L(f)):(f=x(L(f)),f=f.replace(/\n$/,""),f=p(f)),"<li>"+f+"</li>\n"}),a=a.replace(/~0/g,""),e--,a};var y=function(a){return a+="~0",a=a.replace(/(?:\n\n|^)((?:(?:[ ]{4}|\t).*\n+)+)(\n*[ ]{0,3}[^ \t\n]|(?=~0))/g,function(a,b,c){var d=b,e=c;return d=C(L(d)),d=M(d),d=d.replace(/^\n+/g,""),d=d.replace(/\n+$/g,""),d="<pre><code>"+d+"\n</code></pre>",A(d)+e}),a=a.replace(/~0/,""),a},z=function(a){return a+="~0",a=a.replace(/(?:^|\n)```(.*)\n([\s\S]*?)\n```/g,function(a,b,c){var d=b,e=c;return e=C(e),e=M(e),e=e.replace(/^\n+/g,""),e=e.replace(/\n+$/g,""),e="<pre><code"+(d?' class="'+d+'"':"")+">"+e+"\n</code></pre>",A(e)}),a=a.replace(/~0/,""),a},A=function(a){return a=a.replace(/(^\n+|\n+$)/g,""),"\n\n~K"+(d.push(a)-1)+"K\n\n"},B=function(a){return a=a.replace(/(^|[^\\])(`+)([^\r]*?[^`])\2(?!`)/gm,function(a,b,c,d,e){var f=d;return f=f.replace(/^([ \t]*)/g,""),f=f.replace(/[ \t]*$/g,""),f=C(f),b+"<code>"+f+"</code>"}),a},C=function(a){return a=a.replace(/&/g,"&amp;"),a=a.replace(/</g,"&lt;"),a=a.replace(/>/g,"&gt;"),a=N(a,"*_{}[]\\",!1),a},D=function(a){return a=a.replace(/(\*\*|__)(?=\S)([^\r]*?\S[*_]*)\1/g,"<strong>$2</strong>"),a=a.replace(/(\*|_)(?=\S)([^\r]*?\S)\1/g,"<em>$2</em>"),a},E=function(a){return a=a.replace(/((^[ \t]*>[ \t]?.+\n(.+\n)*\n*)+)/gm,function(a,b){var c=b;return c=c.replace(/^[ \t]*>[ \t]?/gm,"~0"),c=c.replace(/~0/g,""),c=c.replace(/^[ \t]+$/gm,""),c=o(c),c=c.replace(/(^|\n)/g,"$1  "),c=c.replace(/(\s*<pre>[^\r]+?<\/pre>)/gm,function(a,b){var c=b;return c=c.replace(/^  /mg,"~0"),c=c.replace(/~0/g,""),c}),A("<blockquote>\n"+c+"\n</blockquote>")}),a},F=function(a){a=a.replace(/^\n+/g,""),a=a.replace(/\n+$/g,"");var b=a.split(/\n{2,}/g),c=[],e=b.length;for(var f=0;f<e;f++){var g=b[f];g.search(/~K(\d+)K/g)>=0?c.push(g):g.search(/\S/)>=0&&(g=p(g),g=g.replace(/^([ \t]*)/g,"<p>"),g+="</p>",c.push(g))}e=c.length;for(var f=0;f<e;f++)while(c[f].search(/~K(\d+)K/)>=0){var h=d[RegExp.$1];h=h.replace(/\$/g,"$$$$"),c[f]=c[f].replace(/~K\d+K/,h)}return c.join("\n\n")},G=function(a){return a=a.replace(/&(?!#?[xX]?(?:[0-9a-fA-F]+|\w+);)/g,"&amp;"),a=a.replace(/<(?![a-z\/?\$!])/gi,"&lt;"),a},H=function(a){return a=a.replace(/\\(\\)/g,O),a=a.replace(/\\([`*_{}\[\]()>#+-.!])/g,O),a},I=function(a){return a=a.replace(/<((https?|ftp|dict):[^'">\s]+)>/gi,'<a href="$1">$1</a>'),a=a.replace(/<(?:mailto:)?([-.\w]+\@[-a-z0-9]+(\.[-a-z0-9]+)*\.[a-z]+)>/gi,function(a,b){return J(K(b))}),a},J=function(a){var b=[function(a){return"&#"+a.charCodeAt(0)+";"},function(a){return"&#x"+a.charCodeAt(0).toString(16)+";"},function(a){return a}];return a="mailto:"+a,a=a.replace(/./g,function(a){if(a=="@")a=b[Math.floor(Math.random()*2)](a);else if(a!=":"){var c=Math.random();a=c>.9?b[2](a):c>.45?b[1](a):b[0](a)}return a}),a='<a href="'+a+'">'+a+"</a>",a=a.replace(/">.+:/g,'">'),a},K=function(a){return a=a.replace(/~E(\d+)E/g,function(a,b){var c=parseInt(b);return String.fromCharCode(c)}),a},L=function(a){return a=a.replace(/^(\t|[ ]{1,4})/gm,"~0"),a=a.replace(/~0/g,""),a},M=function(a){return a=a.replace(/\t(?=\t)/g,"    "),a=a.replace(/\t/g,"~A~B"),a=a.replace(/~B(.+?)~A/g,function(a,b,c){var d=b,e=4-d.length%4;for(var f=0;f<e;f++)d+=" ";return d}),a=a.replace(/~A/g,"    "),a=a.replace(/~B/g,""),a},N=function(a,b,c){var d="(["+b.replace(/([\[\]\\])/g,"\\$1")+"])";c&&(d="\\\\"+d);var e=new RegExp(d,"g");return a=a.replace(e,O),a},O=function(a,b){var c=b.charCodeAt(0);return"~E"+c+"E"}},typeof module!="undefined"&&(module.exports=Showdown),typeof define=="function"&&define.amd&&define("showdown",function(){return Showdown});
+
+(function () {
+    var ghostdown = function () {
+        return [
+            // ![] image syntax
+            {
+                type: 'lang',
+                filter: function (text) {
+                    var imageMarkdownRegex = /^(?:\{<(.*?)>\})?!(?:\[([^\n\]]*)\])(?:\(([^\n\]]*)\))?$/gim,
+                        /* regex from isURL in node-validator. Yum! */
+                        uriRegex = /^(?!mailto:)(?:(?:https?|ftp):\/\/)?(?:\S+(?::\S*)?@)?(?:(?:(?:[1-9]\d?|1\d\d|2[01]\d|22[0-3])(?:\.(?:1?\d{1,2}|2[0-4]\d|25[0-5])){2}(?:\.(?:[0-9]\d?|1\d\d|2[0-4]\d|25[0-4]))|(?:(?:[a-z\u00a1-\uffff0-9]+-?)*[a-z\u00a1-\uffff0-9]+)(?:\.(?:[a-z\u00a1-\uffff0-9]+-?)*[a-z\u00a1-\uffff0-9]+)*(?:\.(?:[a-z\u00a1-\uffff]{2,})))|localhost)(?::\d{2,5})?(?:\/[^\s]*)?$/i,
+                        pathRegex = /^(\/)?([^\/\0]+(\/)?)+$/i;
+
+                    return text.replace(imageMarkdownRegex, function (match, key, alt, src) {
+                        console.log(match);
+                        console.log(key);
+                        console.log(alt);
+                        console.log(src);
+                        var result = "";
+
+                        if (src && (src.match(uriRegex) || src.match(pathRegex))) {
+                            result = '<img class="js-upload-target" src="' + src + '"/>';
+                        }
+                        return '<section id="image_upload_' + key + '" class="js-drop-zone image-uploader">' + result +
+                               '<div class="description">Add image of <strong>' + alt + '</strong></div>' +
+                               '<input data-url="upload" class="js-fileupload main fileupload" type="file" name="uploadimage">' +
+                               '</section>';
+                    });
+                }
+            }
+        ];
+    };
+
+    // Client-side export
+    if (typeof window !== 'undefined' && window.Showdown && window.Showdown.extensions) {
+        window.Showdown.extensions.ghostdown = ghostdown;
+    }
+    // Server-side export
+    if (typeof module !== 'undefined') module.exports = ghostdown;
+}());
+
+// Github Extension
+//
+
+(function () {
+    var github = function (converter) {
+        return [
+        {
+            // strike-through
+            // NOTE: showdown already replaced "~" with "~T", so we need to adjust accordingly.
+            type : 'lang',
+            regex : '(~T){2}([^~]+)(~T){2}',
+            replace : function (match, prefix, content, suffix) {
+                return '<del>' + content + '</del>';
+            }
+        },
+        {
+            // GFM newline and underscore modifications, happen BEFORE showdown
+            type : 'lang',
+            filter : function (text) {
+                var preExtractions = {},
+                imageMarkdownRegex = /^(?:\{(.*?)\})?!(?:\[([^\n\]]*)\])(?:\(([^\n\]]*)\))?$/gim,
+                hashID = 0;
+
+                function hashId() {
+                    return hashID++;
+                }
+
+                // Extract pre blocks
+                text = text.replace(/<pre>[\s\S]*?<\/pre>/gim, function (x) {
+                    var hash = hashId();
+                    preExtractions[hash] = x;
+                    return "{gfm-js-extract-pre-" + hash + "}";
+                }, 'm');
+
+                //prevent foo_bar and foo_bar_baz from ending up with an italic word in the middle
+                text = text.replace(/(^(?! {4}|\t)\w+_\w+_\w[\w_]*)/gm, function (x) {
+                    return x.replace(/_/gm, '\\_');
+                });
+
+                // in very clear cases, let newlines become <br /> tags
+                text = text.replace(/^[\w\<][^\n]*\n+/gm, function (x) {
+                    return x.match(/\n{2}/) ? x : x.trim() + "  \n";
+                });
+
+                // better URL support, but no title support
+                text = text.replace(imageMarkdownRegex, function (match, key, alt, src) {
+                    if (src) {
+                        return '<img src="' + src + '" alt="' + alt + '" />';
+                    }
+
+                    return '';
+                });
+
+                text = text.replace(/\{gfm-js-extract-pre-([0-9]+)\}/gm, function (x, y) {
+                    return "\n\n" + preExtractions[y];
+                });
+
+
+                return text;
+            }
+        },
+        {
+            // GFM autolinking & custom image handling, happens AFTER showdown
+            type : 'html',
+            filter : function (text) {
+                var refExtractions = {},
+                preExtractions = {},
+                hashID = 0;
+
+                function hashId() {
+                    return hashID++;
+                }
+
+                // Extract pre blocks
+                text = text.replace(/<(pre|code)>[\s\S]*?<\/(\1)>/gim, function (x) {
+                    var hash = hashId();
+                    preExtractions[hash] = x;
+                    return "{gfm-js-extract-pre-" + hash + "}";
+                }, 'm');
+
+                // filter out def urls
+                // from Marked https://github.com/chjj/marked/blob/master/lib/marked.js#L24
+                text = text.replace(/^ *\[([^\]]+)\]: *<?([^\s>]+)>?(?: +["(]([^\n]+)[")])? *(?:\n+|$)/gmi,
+                function (x) {
+                    var hash = hashId();
+                    refExtractions[hash] = x;
+                    return "{gfm-js-extract-ref-url-" + hash + "}";
+                });
+
+                // match a URL
+                // adapted from https://gist.github.com/jorilallo/1283095#L158
+                // and http://blog.stevenlevithan.com/archives/mimic-lookbehind-javascript
+                text = text.replace(/(\]\(|\]|\[|<a[^\>]*?\>)?https?\:\/\/[^"\s\<\>]*[^.,;'">\:\s\<\>\)\]\!]/gmi,
+                function (wholeMatch, lookBehind, matchIndex) {
+                    // Check we are not inside an HTML tag
+                    var left = text.slice(0, matchIndex), right = text.slice(matchIndex);
+                    if ((left.match(/<[^>]+$/) && right.match(/^[^>]*>/)) || lookBehind) {
+                        return wholeMatch;
+                    }
+                    // If we have a matching lookBehind, this is a failure, else wrap the match in <a> tag
+                    return lookBehind ? wholeMatch : "<a href='" + wholeMatch + "'>" + wholeMatch + "</a>";
+                });
+
+                // match email
+                text = text.replace(/[a-z0-9_\-+=.]+@[a-z0-9\-]+(\.[a-z0-9-]+)+/gmi, function (wholeMatch) {
+                    return "<a href='mailto:" + wholeMatch + "'>" + wholeMatch + "</a>";
+                });
+
+                // replace extractions
+                text = text.replace(/\{gfm-js-extract-pre-([0-9]+)\}/gm, function (x, y) {
+                    return preExtractions[y];
+                });
+
+                text = text.replace(/\{gfm-js-extract-ref-url-([0-9]+)\}/gi, function (x, y) {
+                    return "\n\n" + refExtractions[y];
+                });
+
+                return text;
+            }
+        }
+        ];
+    };
+
+    // Client-side export
+    if (typeof window !== 'undefined' && window.Showdown && window.Showdown.extensions) {
+        window.Showdown.extensions.github = github;
+    }
+    // Server-side export
+    if (typeof module !== 'undefined')
+        module.exports = github;
+}());
+
+
 (function ($, ShowDown, CodeMirror) {
     "use strict";
 
@@ -6345,7 +6878,7 @@ var Showdown={extensions:{}},forEach=Showdown.forEach=function(a,b){if(typeof a.
       return;
 
     //var delay;
-    var converter = new ShowDown.converter(),
+    var converter = new ShowDown.converter({extensions: ['ghostdown','github']}),
         editor = CodeMirror.fromTextArea(document.getElementById('entry-markdown'), {
             mode: 'markdown',
             tabMode: 'indent',
@@ -6362,9 +6895,16 @@ var Showdown={extensions:{}},forEach=Showdown.forEach=function(a,b){if(typeof a.
         }
     }
 
+    function initUploads(){
+        $('.js-drop-zone').upload({editor: true});
+    }
+
+
     function updatePreview() {
         var preview = document.getElementsByClassName('rendered-markdown')[0];
         preview.innerHTML = converter.makeHtml(editor.getValue());
+
+        initUploads();
 
         updateWordCount();
     }
